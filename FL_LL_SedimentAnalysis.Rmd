@@ -1,0 +1,1236 @@
+---
+title: "Florida Large Lakes Sediment Analysis 2016-18"
+author: "Tony Olsen"
+date: "`r format(Sys.time(),  '%B %d, %Y')`"
+output: 
+  html_document:
+    highlighted: default
+    number_sections: true
+    theme: cosmo
+    toc: yes
+    code_folding: show
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    df_print: paged
+    fig_caption: yes
+    depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This RMarkdown script is based on an original R script "LL_Sediments_2016_18.R" that was based on "2016-2018 LL analysis script Sediments.R". 
+
+Note that this code can be executed in current environment by using the code within the ```{r} to ``` portions.  It can also be executed by using "knit" in RStudio which will produce an html file of the output.
+
+Load libraries and set working directory or path.
+```{r library and path}
+library(spsurvey)
+library(sf)
+library(ggplot2)
+setwd("C:/Users/tolsen/Documents/FL_Lakes/")
+```
+Note that the script uses version 4.1.0 of spsurvey which requires use of "sf" and "sp" packages.
+
+# Purpose
+Based on a discussion with Florida, a concern was raised about the area associated with sediment population estimates. The script that follows adjusts the weights for the design as implemented, estimates extent area and then does population estimates for sediments.
+
+# Read in design data
+```{r}
+LL.SITES <- read.csv("Original_Data/LL_EXCLUSIONS_2016_2018_REDO_102419.csv",
+                     stringsAsFactors = FALSE)
+names(LL.SITES)
+head(LL.SITES)
+```
+
+Only location information that is available for all sites is RANDOM_LATITUDE and RANDOM_LONGITUDE which must be converted to decimal degrees.
+```{r latlon}
+# convert to Decimal degrees
+deg <- floor(LL.SITES$RANDOM_LATITUDE/10000)
+min <- floor((LL.SITES$RANDOM_LATITUDE - deg*10000)/100)
+sec <- LL.SITES$RANDOM_LATITUDE - deg*10000 - min*100
+LL.SITES$latdd <- deg + min/60 + sec/3600
+deg <- floor(LL.SITES$RANDOM_LONGITUDE/10000)
+min <- floor((LL.SITES$RANDOM_LONGITUDE - deg*10000)/100)
+sec <- LL.SITES$RANDOM_LONGITUDE - deg*10000 - min*100
+LL.SITES$londd <- deg + min/60 + sec/3600
+# Change londd to negative for correct use in sf.
+LL.SITES$londd <- -LL.SITES$londd
+```
+
+spsurvey in the future will use sf objects and will not have functions to convert to projected coordinates except by use of sf library functions. Consequently, create an sf design object, transform to an Albers projection and keep both lat/lon and xycoords as variables in the data.frame. Note that crs equal to EPSG code 4152 is NAD83 HARN datum for lat/lon and EPSG code 5070 is an Albers projection. Can do web search for these to see their definition.
+
+Note the plot command is a "method" for sf package to plot information. In this case, all we plot is the site locations, i.e., their geometry.
+```{r}
+# Create sf object and transform to Albers projection for analysis
+dsgn_LL <- st_as_sf(LL.SITES, coords = c("londd", "latdd"), remove = FALSE,
+                    crs = 4152)
+dsgn_sf <- st_transform(dsgn_LL, crs = 5070)
+
+# keep xy coords as variables
+tmp <- st_coordinates(dsgn_sf)
+dsgn_sf$xcoord <- tmp[, "X"]
+dsgn_sf$ycoord <- tmp[, "Y"]
+
+# plot sites using sf
+plot(st_geometry(dsgn_sf))
+
+```
+
+
+# Site Evaluation
+The variables CAN_BE_SAMPLED, EXCLUSION_CATEGORY and EXCLUSION_CRITERIA provide information on the site evaluation results for each site. Review the information and create target/nontarget (TNT) variable.
+```{r}
+addmargins(table(dsgn_sf$EXCLUSION_CATEGORY, dsgn_sf$CAN_BE_SAMPLED, useNA = 'ifany'))
+addmargins(table(dsgn_sf$EXCLUSION_CRITERIA, useNA = 'ifany'))
+
+
+# create status and TNT variables
+dsgn_sf$EXCLUSION_CATEGORY <- as.character(dsgn_sf$EXCLUSION_CATEGORY)
+dsgn_sf$EXCLUSION_CATEGORY[dsgn_sf$CAN_BE_SAMPLED == 'Y'] <- 'SAMPLED'
+dsgn_sf$EXCLUSION_CATEGORY <- as.factor(dsgn_sf$EXCLUSION_CATEGORY)
+levels(dsgn_sf$EXCLUSION_CATEGORY)
+dsgn_sf$TNT <- dsgn_sf$EXCLUSION_CATEGORY
+levels(dsgn_sf$TNT) <- list(T=c('SAMPLED', 'NO PERMISSION FROM OWNER', 'UNABLE TO ACCESS','OTHERWISE UNSAMPLEABLE','DRY'),
+                             NT=c('WRONG RESOURCE/NOT PART OF TARGET POPULATION') )
+
+addmargins(table(dsgn_sf$EXCLUSION_CATEGORY, dsgn_sf$TNT, useNA = 'ifany'))
+```
+A total of 316 sites were evaluated with 270 sites actually being sampled. Six sites were determined to be not in the target population. Of those sites in the target population, six were determined to be dry. Not clear if just the site was dry or the entire lake. Should these sites be part of the target population? Is the target population all lake area for lakes greater than a specific area (10 hecters?) and that water is present during the sampling index period? Or is it just lakes greater than specific area regardless whether water is present. The answer impacts the estimated lake area for the target population. The current analysis assumes the latter.  An additional 34 sites could not be sampled for other reasons.
+
+# Adjust weights for Design As Implemented
+Since the survey design implementation required the use of replacement sites, the initial design weights must be adjusted to account for the actual number of sites evaluated. The weight adjustment requires knowing the lake area in the sample frame. First, create the framesize using lake hectares per zone from design document. Note that if prefer to have the lake area in units other than hectares, then best option is to do the conversion on framesize. For example, multiple framesize by 2.471 to convert to acres. The initial design weights are in "NEST1_WT" and the weight adjustment categories are the six reporting units (or basins).
+```{r}
+# From design document. Framesize in hectares -- total = 388,231
+framesize <- c("ZONE 1" = 20352.681,"ZONE 2" = 7659.159, "ZONE 3" = 120941.938,
+               "ZONE 4" = 44684.968,"ZONE 5" = 64552.710, "ZONE 6" = 130039.903 )
+
+# use all evaluated sites to adjust weights
+nr <- nrow(dsgn_sf)
+dsgn_sf$wgt <- adjwgt(rep(TRUE,nr), dsgn_sf$NEST1_WT, 
+                       dsgn_sf$REPORTING_UNIT, framesize=framesize)
+                       
+# check sum of weights for each reporting unit/basin
+addmargins(tapply(dsgn_sf$wgt, dsgn_sf$REPORTING_UNIT, sum))
+```
+This gives the weights for the large lake design as implememented in 2016-18. It must include all evaluated sites as some sites are not in the target population.
+
+# Estimate Extent Lake Area
+Since the sample frame includes portions of lake object polygons that do not meet the defnition of a large lake, the site evaluation information is used to estimate the lake area in the target population for entire state and for each of the reporting units/basins.
+
+```{r}
+sites <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION,
+                     Combined = rep("All Basins", nr), 
+                     Basin = dsgn_sf$REPORTING_UNIT) 
+dsgn <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt = dsgn_sf$wgt,
+                   xcoord = dsgn_sf$xcoord,
+                   ycoord = dsgn_sf$ycoord,
+                   stratum = dsgn_sf$REPORTING_UNIT)
+
+data.cat <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION,
+                       TNTStatus=dsgn_sf$TNT,
+                       EXCLUSION.CATEGORY = dsgn_sf$EXCLUSION_CATEGORY)
+
+ExtentEst <- cat.analysis(sites, subpop, dsgn, data.cat, conf=95)
+
+# write out or export results
+write.csv(ExtentEst,file = 'ExtentEst.csv')
+```
+Of the 388,231 hectares in the sample frame, 98.75% is estimated to be in the target population, i.e., 383,385 ha. These estimates would be lower if "DRY" sites are not part of the target population.
+
+Also, only 90.3% of the sample frame could actually be sampled. To estimate the percent of the target population that could be sampled, requires that the analysis be stricted to just sites in the target population, i.e., TNT = "T"
+
+```{r}
+sites <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION, Use = dsgn_sf$TNT == "T" )
+subpop <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION,
+                     Combined = rep("All Basins", nr), 
+                     Basin = dsgn_sf$REPORTING_UNIT) 
+dsgn <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt = dsgn_sf$wgt,
+                   xcoord = dsgn_sf$xcoord,
+                   ycoord = dsgn_sf$ycoord,
+                   stratum = dsgn_sf$REPORTING_UNIT)
+
+data.cat <- data.frame(siteID = dsgn_sf$PK_RANDOM_SAMPLE_LOCATION,  
+                       EXCLUSION.CATEGORY = dsgn_sf$EXCLUSION_CATEGORY)
+
+ExtentEst_Target <- cat.analysis(sites, subpop, dsgn, data.cat, conf=95)
+
+# write out or export results
+write.csv(ExtentEst_Target, file = 'ExtentEst_Target.csv')
+```
+91.4% of the target population area could be sampled, i.e., 350,534ha CI(326291, 374777)ha
+
+
+# Water Quality and Sediment Data
+
+Read in the sample results and check samples by Sample.Type and Matrix.
+```{r}
+LL_RSLTS <- read.csv("Original_Data/LL_RESULTS_2016_2018_07242020.csv",
+                    stringsAsFactors = FALSE)
+names(LL_RSLTS)
+# look at sample type
+addmargins(table(LL_RSLTS$Sample.Type, LL_RSLTS$Matrix, useNA = 'ifany'))
+```
+Note that have BLANK, BOTTOM and PRIMARY data in original spreadsheet and  Water and Sediment matrix types. A total of 270 sites sampled for water quality and 248 for sediment. Only want to use PRIMARY results for population estimation.
+
+Clean up names to simplify their use.
+```{r}
+names(LL_RSLTS) <- c("Sample_Id", "Station_No", "Station_Name", "Collect_Date",
+                     "Sample_Type", "Matrix", "Water_Temperature", "Water_Temperature_VQ",
+                     "Weather", "Weather_VQ", "Turbidity_Lab", "Turbidity_Lab_VQ",
+                     "Transparency_Secchi_Depth", "Transparency_Secchi_Depth_VQ",
+                     "Color_true", "Color_true_VQ", "Specific_Conductance_Field",
+                     "Specific_Conductance_Field_VQ", "Specific_Conductance_Lab",
+                     "Specific_Conductance_Lab_VQ", "Oxygen_Dissolved_Field",
+                     "Oxygen_Dissolved_Field_VQ", "Oxygen_Dissolved_Percent_Saturation",
+                     "Oxygen_Dissolved_Percent_Saturation_VQ", "pH_Field", "pH_Field_VQ",
+                     "Alkalinity_Total_as_CaCO3", "Alkalinity_Total_as_CaCO3_VQ",
+                     "Total_Suspended_Solids_TSS", "Total_Suspended_Solids_TSS_VQ",
+                     "Ammonia_Total_as_N", "Ammonia_Total_as_N_VQ",
+                     "Kjeldahl_Nitrogen_Total_as_N", "Kjeldahl_Nitrogen_Total_as_N_VQ",
+                     "Total_Kjeldahl_Nitrogen_Total_as_N_Sediments",
+                     "Total_Kjeldahl_Nitrogen_Total_as_N_VQ",
+                     "Nitrate_Nitrite_Total_as_N", "Nitrate_Nitrite_Total_as_N_VQ",
+                     "Phosphorus_Total_as_P", "Phosphorus_Total_as_P_VQ",
+                     "Phosphorus_Total_as_P_Sediments",
+                     "Phosphorus_Total_as_P_Sediments_VQ",
+                     "Organic_Carbon_Total", "Organic_Carbon_Total_VQ",
+                     "Calcium_Total", "Calcium_Total_VQ", "Magnesium_Total",
+                     "Magnesium_Total_VQ", "Sodium_Total", "Sodium_Total_VQ",
+                     "Potassium_Total", "Potassium_Total_VQ", "Chloride_Total",
+                     "Chloride_Total_VQ", "Sulfate_Total", "Sulfate_Total_VQ",
+                     "Fluoride_Total", "Fluoride_Total_VQ", "X", "X_1",
+                     "Chlorophyll_A_Uncorrected_Trichromatic",
+                     "Chlorophyll_A_Uncorrected_Trichromatic_VQ",
+                     "Chlorophyll_A_Monochromatic", "Chlorophyll_A_Monochromatic_VQ",
+                     "Pheophytin_A_Monochromatic" ,
+                     "Pheophytin_A_Monochromatic_VQ", "Chlorophyll_Pheophytin_Ratio",
+                     "Chlorophyll_Pheophytin_Ratio_VQ", "Carbon_Total_Sediments",
+                     "Carbon_Total_Sediments_VQ", "Hardness_calculated_as_CACO3",
+                     "Hardness_calculated_as_CACO3_VQ",
+                     "Total_Dissolved_Solids_TDS_measured",
+                     "Total_Dissolved_Solids_TDS_measured_VQ", "Mercury_Sediments",
+                     "Mercury_Sediments_VQ", "Inorganic_Carbon_Sediments",
+                     "Inorganic_Carbon_Sediments_VQ", "Organic_Carbon_Sediments",
+                     "Organic_Carbon_Sediments_VQ",
+                     "Depth_Bottom_of_Waterbody_Sample_Site",
+                     "Depth_Bottom_of_Waterbody_Sample_Site_VQ",
+                     "Sample_Depth", "Sample_Depth_VQ", "Enterococci_Quanti_Tray",
+                      "Enterococci_Quanti_Tray_VQ", "Escherichia_Coli_Quanti_Tray",
+                     "Escherichia_Coli_Quanti_Tray_VQ", "X_2", "X_3", "Sediment_Grabs",
+                     "Sediment_Grabs_VQ", "Sediment_Color", "Sediment_Color_VQ",
+                     "Sediment_Odor", "Sediment_Odor_VQ", "Sediment_Type",
+                     "Sediment_Type_VQ", "Sediment_Collection_Area",
+                     "Sediment_Collection_Area_VQ", "Water_Sample_Collection_Device",
+                     "Water_Sample_Collection_Device_VQ", "Trash", "Trash_VQ",
+                     "Water_Level", "Water_Level_VQ", "Chromium_Sediments",
+                     "Chromium_Sediments_VQ", "Cadmium_Sediments",
+                     "Cadmium_Sediments_VQ", "Zinc_Sediments", "Zinc_Sediments_VQ",
+                     "Arsenic_Sediments", "Arsenic_Sediments_VQ", "Silver_Sediments",
+                     "Silver_Sediments_VQ", "Nickel_Sediments", "Nickel_Sediments_VQ",
+                     "Lead_Sediments", "Lead_Sediments_VQ", "Iron_Sediments",
+                     "Iron_Sediments_VQ", "Copper_Sediments", "Copper_Sediments_VQ",
+                     "Aluminum_Sediments", "Aluminum_Sediments_VQ")
+```
+
+
+# Water Quality Analyses
+Water quality analyses are based on 270 sites from the results file and must be merged with design information.
+```{r WQ}
+keep <- LL_RSLTS$Sample_Type == 'PRIMARY' & LL_RSLTS$Matrix == 'WATER'
+
+# merge with exclusion file
+LL_WQ <- merge(as.data.frame(dsgn_sf)[, c("PK_RANDOM_SAMPLE_LOCATION",
+                                          "REPORTING_UNIT", "EXCLUSION_CATEGORY",
+                                          "TNT", "wgt", "londd", "latdd",
+                                          "xcoord", "ycoord")], LL_RSLTS[keep,], 
+               by.x = 'PK_RANDOM_SAMPLE_LOCATION', by.y = 'Station_Name')
+
+# check that have only PRIMARY for Water MATRIX data
+addmargins(table(LL_WQ$Sample_Type, LL_WQ$Matrix, useNA = 'ifany'))
+```
+No estimation done for water quality parameters. Note that the total lake area is 350,534ha which is the estimated area of the "sampled population". The total area in the sample frame is 388,231 ha and the total area in the target population is 383,385ha. If want estimates for the entire target population, then either must adjust the weights so that they total the target population area or use the popsize argument in cont.analysis where the popsize is not the framesize but the estimated target population size for each of the report zones.
+
+# Sediment Analyses
+Sediment analyses are based on 240 sites since a number of sites sampled for water quality could not be sampled for sediment.
+
+First, create dataframe with only sediment data 
+```{r Sediment}
+keep <- LL_RSLTS$Sample_Type == 'PRIMARY' & LL_RSLTS$Matrix == 'SEDIMENT'
+sed_keep <- c("Station_Name",
+              "Carbon_Total_Sediments", "Carbon_Total_Sediments_VQ",
+              "Organic_Carbon_Total", "Organic_Carbon_Total_VQ",
+              "Inorganic_Carbon_Sediments", "Inorganic_Carbon_Sediments_VQ",
+              "Organic_Carbon_Sediments", "Organic_Carbon_Sediments_VQ",
+              "Phosphorus_Total_as_P_Sediments", "Phosphorus_Total_as_P_Sediments_VQ",
+              "Total_Kjeldahl_Nitrogen_Total_as_N_Sediments",
+              "Total_Kjeldahl_Nitrogen_Total_as_N_VQ",
+              "Aluminum_Sediments", "Aluminum_Sediments_VQ",
+              "Arsenic_Sediments", "Arsenic_Sediments_VQ",
+              "Cadmium_Sediments", "Cadmium_Sediments_VQ",
+              "Chromium_Sediments", "Chromium_Sediments_VQ",
+              "Copper_Sediments", "Copper_Sediments_VQ",
+              "Iron_Sediments", "Iron_Sediments_VQ",
+              "Lead_Sediments", "Lead_Sediments_VQ",
+              "Mercury_Sediments", "Mercury_Sediments_VQ",
+              "Nickel_Sediments", "Nickel_Sediments_VQ",
+              "Silver_Sediments", "Silver_Sediments_VQ",
+              "Zinc_Sediments", "Zinc_Sediments_VQ"
+               )
+
+# merge with exclusion file
+LL_SED <- merge(as.data.frame(dsgn_sf)[, c("PK_RANDOM_SAMPLE_LOCATION",
+                                          "REPORTING_UNIT", "EXCLUSION_CATEGORY",
+                                          "TNT", "wgt", "londd", "latdd",
+                                          "xcoord", "ycoord")], 
+                LL_RSLTS[keep,sed_keep], 
+                by.x = 'PK_RANDOM_SAMPLE_LOCATION', by.y = 'Station_Name')
+
+# check that have only PRIMARY for Water MATRIX data
+addmargins(table(LL_SED$Sample_Type, LL_SED$Matrix, useNA = 'ifany'))
+```
+
+Create PEC categories
+```{r}
+LL_SED$AsPECcat <- ifelse(LL_SED$Arsenic_Sediments > 33, 1, 0)
+LL_SED$AsPECcat[is.na(LL_SED$AsPECcat)] <- 0
+LL_SED$CdPECcat <- ifelse(LL_SED$Cadmium_Sediments > 5, 1, 0)
+LL_SED$CdPECcat[is.na(LL_SED$CdPECcat)] <- 0
+LL_SED$CrPECcat <- ifelse(LL_SED$Chromium_Sediments > 111, 1, 0)
+LL_SED$CrPECcat[is.na(LL_SED$CrPECcat)] <- 0
+LL_SED$CuPECcat <- ifelse(LL_SED$Copper_Sediments > 149, 1, 0)
+LL_SED$CuPECcat[is.na(LL_SED$CuPECcat)] <- 0
+LL_SED$AgPECcat <- ifelse(LL_SED$Silver_Sediments > 2.2, 1, 0)
+LL_SED$AgPECcat[is.na(LL_SED$AgPECcat)] <- 0
+LL_SED$NiPECcat <- ifelse(LL_SED$Nickel_Sediments > 48, 1, 0)
+LL_SED$NiPECcat[is.na(LL_SED$NiPECcat)] <- 0
+LL_SED$PbPECcat <- ifelse(LL_SED$Lead_Sediments > 128, 1, 0)
+LL_SED$PbPECcat[is.na(LL_SED$PbPECcat)] <- 0
+LL_SED$HgPECcat <- ifelse(LL_SED$Mercury_Sediments > 1.06, 1, 0)
+LL_SED$HgPECcat[is.na(LL_SED$HgPECcat)] <- 0
+LL_SED$ZnPECcat <- ifelse(LL_SED$Zinc_Sediments > 459, 1, 0)
+LL_SED$ZnPECcat[is.na(LL_SED$ZnPECcat)] <- 0
+
+# Combined total PEC categories
+LL_SED$NumExceedPECcat <- LL_SED$AsPECcat + LL_SED$CdPECcat + LL_SED$CrPECcat +
+                          LL_SED$CuPECcat + LL_SED$AgPECcat + LL_SED$NiPECcat +
+                          LL_SED$PbPECcat + LL_SED$HgPECcat + LL_SED$ZnPECcat 
+  
+# Sites that exceed at least one
+LL_SED$Exceed1_PECcat <- LL_SED$NumExceedPECcat
+LL_SED$Exceed1_PECcat[LL_SED$Exceed1_PECcat >= 1] <- 1
+
+addmargins(table(NumExceedPECcat = LL_SED$NumExceedPECcat, 
+                 Exceed1_PECcat = LL_SED$Exceed1_PECcat, useNA = 'ifany'))
+```
+
+
+# Sediment Category Population Estimation
+
+```{r}
+sites_sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION, Use = LL_SED$TNT == "T" )
+subpop_sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION,
+                     Combined = rep("All Basins", nrow(LL_SED)), 
+                     Basin = LL_SED$REPORTING_UNIT) 
+dsgn_sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt = LL_SED$wgt,
+                   xcoord = LL_SED$xcoord,
+                   ycoord = LL_SED$ycoord,
+                   stratum = LL_SED$REPORTING_UNIT)
+
+data.cat.sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION,
+                           Num_Exceed_PEC_Category = LL_SED$NumExceedPECcat,
+                           Exceed_1_PEC_Category = LL_SED$Exceed1_PECcat,
+                           Arsenic_PEC_Category = LL_SED$AsPECcat, 
+                           Cadmium_PEC_Category = LL_SED$CdPECcat,
+                           Chromium = LL_SED$CrPECcat,
+                           Copper_PEC_Category = LL_SED$CuPECcat,
+                           Iron_PEC_Category = LL_SED$AgPECcat,
+                           Nickel_PEC_Category = LL_SED$NiPECcat,
+                           Lead_PEC_Category = LL_SED$PbPECcat,
+                           Mercury_PEC_Category = LL_SED$HgPECcat,
+                           Zinc_PEC_Category = LL_SED$ZnPECcat)
+
+
+Sediment_Cat <- cat.analysis(sites = sites_sed, subpop = subpop_sed, 
+                             design = dsgn_sed, data.cat = data.cat.sed, conf=95)
+```
+This analysis assumes that only want to do estimates for sites sampled for metals. But 22 sites were sampled for water but not sediments and could be assigned a category value of "Not_Assessed". So categories would be 1, 0, Not_Assessed or could recode to be Exceeds, Meets and Not_Assessed.  Note if do this then would use all 270 sampled sites and not just the 248 sampled for sediments.
+
+Assignments to categories makes the assumption that if a value is missing, then it is below the criteria. This was not checked. It may be that some of these could be assigned as Not_assessed.
+
+# Sediment continuous distribution estimation
+
+```{r}
+sites_sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION, Use = LL_SED$TNT == "T" )
+subpop_sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION,
+                     Combined = rep("All Basins", nrow(LL_SED)), 
+                     Basin = LL_SED$REPORTING_UNIT) 
+dsgn_sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt = LL_SED$wgt,
+                   xcoord = LL_SED$xcoord,
+                   ycoord = LL_SED$ycoord,
+                   stratum = LL_SED$REPORTING_UNIT)
+
+data.cont.sed <- data.frame(siteID = LL_SED$PK_RANDOM_SAMPLE_LOCATION,
+                           LL_SED[, seq(10, 42, by = 2)])
+
+Sediment_Cont <- cont.analysis(sites = sites_sed, subpop = subpop_sed, 
+                             design = dsgn_sed, data.cont = data.cont.sed, conf=95)
+```
+
+
+# write out the results
+```{r}
+write.csv(Sediment_Cat, "Sediment_Cat.csv")
+write.csv(Sediment_Cont$CDF, file = 'Sediment_Cont_EstCDF.csv')
+write.csv(Sediment_Cont$Pct, file = 'Sediment_Cont_EstPCT.csv')
+write.csv(Sediment_Cont$Tot, file = 'Sediment_Cont_Est.csv')
+
+```
+
+
+
+
+###################################################################################
+#########  sCRIPT TO CREATE CDF GRAPHICS  #########################################
+#########  Written by Jay Silvanima 07/03/2020  ###################################
+###################################################################################
+
+library(ggplot2)
+
+##### Load the SedimentEstCDF 
+
+SedimentEstCDF
+
+##### Create column to hold info for specific subpopulation by indicator for plotting
+
+SedimentEstCDF$CDF <-paste(SedimentEstCDF$Subpopulation,SedimentEstCDF$Indicator)
+
+##### Plot individual analyte CDFs utilizing column just created - $CDF
+
+##### Plot of Chromium for entire state
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes Sediment Chromium CDF", xlab="Chromium mg/Kg", ylab="Percentile")
+
+##### Plot of Chromium for entire state with connecting line and filled dots.
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes Sediment Chromium CDF", xlab="Chromium mg/Kg", ylab="Percentile",
+     pch = 19, col = 'black', bg = 'lightgray', cex = .75)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Estimate.P)
+
+
+
+##### Plot of Chromium, includes 95% confidence bounds as lines and a textbox.
+##### This is an example of how to add a textbox into a plot    
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Chromium CDF", xlab="Chromium mg/Kg", ylab="Percentile",
+     pch = 19, col = 'black', bg = 'lightgray', cex = .75)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Estimate.P)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$UCB95Pct.P, col = 'red')
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$LCB95Pct.P, col = 'red')
+text(175,15,'n = 248\nRed lines designate\n95% confidence bounds',cex = 1, adj = NULL, col = 'black')
+
+
+##### Plot of Chromium which includes the six zones color coded as lines with legend
+##### This is an example of how to insert a legend into a plot   
+
+##### First create label names
+
+leg.txt <- c('Statewide','ZONE 1','ZONE 2','ZONE 3','ZONE 4','ZONE 5','ZONE 6')   
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Chromium..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Chromium CDF", xlab="Chromium mg/Kg", ylab="Percentile    n = 248")
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Chromium..Sediments',]$Estimate.P, col = 2)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Chromium..Sediments',]$Estimate.P, col = 3)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Chromium..Sediments',]$Estimate.P, col = 4)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Chromium..Sediments',]$Estimate.P, col = 5)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Chromium..Sediments',]$Estimate.P, col = 6)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Chromium..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Chromium..Sediments',]$Estimate.P, col = 9)   
+legend(150, 50, leg.txt, pch = 16, col = c(1,2,3,4,5,6,9))
+
+
+##### Plot of TKN, includes 95% confidence bounds as lines and a textbox.
+##### This is an example of how to add a textbox into a plot    
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Total Kjeldahl Nitrogen CDF", xlab="TKN mg/Kg", ylab="Percentile",
+     pch = 19, col = 'black', bg = 'lightgray', cex = .75)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$UCB95Pct.P, col = 'red')
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$LCB95Pct.P, col = 'red')
+text(28000,15,'n = 246\nRed lines designate\n95% confidence bounds',cex = 1, adj = NULL, col = 'black')
+
+
+##### Plot of TKN which includes the six zones color coded as lines with legend
+##### This is an example of how to insert a legend into a plot   
+
+##### First create label names
+
+leg.txt <- c('Statewide','ZONE 1','ZONE 2','ZONE 3','ZONE 4','ZONE 5','ZONE 6')   
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Total Kjeldahl Nitrogen CDF", xlab="TKN mg/Kg", ylab="Percentile   n = 246")
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P, col = 2)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P, col = 3)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P, col = 4)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P, col = 5)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P, col = 6)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Kjeldahl..Nitrogen..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Kjeldahl..Nitrogen..Total..Sediments',]$Estimate.P, col = 9)   
+legend(28000,50, leg.txt, pch = 16, col = c(1,2,3,4,5,6,9))
+
+##### Plot of Total Phosphorus, includes 95% confidence bounds as lines and a textbox.
+##### This is an example of how to add a textbox into a plot    
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Total Phosphorus CDF", xlab="TP mg/Kg", ylab="Percentile",
+     pch = 19, col = 'black', bg = 'lightgray', cex = .75)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Estimate.P)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$UCB95Pct.P, col = 'red')
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$LCB95Pct.P, col = 'red')
+text(8000,15,'n = 246\nRed lines designate\n95% confidence bounds',cex = 1, adj = NULL, col = 'black')
+
+
+##### Plot of total phosphorus which includes the six zones color coded as lines with legend
+##### This is an example of how to insert a legend into a plot   
+
+##### First create label names
+
+leg.txt <- c('Statewide','ZONE 1','ZONE 2','ZONE 3','ZONE 4','ZONE 5','ZONE 6')   
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Phosphorus..Total..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Total Phosphorus CDF", xlab="TP mg/Kg", ylab="Percentile   n = 246")
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Phosphorus..Total..Sediments',]$Estimate.P, col = 2)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Phosphorus..Total..Sediments',]$Estimate.P, col = 3)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Phosphorus..Total..Sediments',]$Estimate.P, col = 4)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Phosphorus..Total..Sediments',]$Estimate.P, col = 5)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Phosphorus..Total..Sediments',]$Estimate.P, col = 6)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Phosphorus..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Phosphorus..Total..Sediments',]$Estimate.P, col = 9)   
+legend(4200,50, leg.txt, pch = 16, col = c(1,2,3,4,5,6,9))
+
+
+##### Plot of total carbon, includes 95% confidence bounds as lines and a textbox.
+##### This is an example of how to add a textbox into a plot    
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Total Carbon CDF", xlab="C mg/Kg", ylab="Percentile",
+     pch = 19, col = 'black', bg = 'lightgray', cex = .75)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Estimate.P)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$UCB95Pct.P, col = 'red')
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$LCB95Pct.P, col = 'red')
+text(35,15,'n = 246\nRed lines designate\n95% confidence bounds',cex = 1, adj = NULL, col = 'black')
+
+
+##### Plot of total carbon which includes the six zones color coded as lines with legend
+##### This is an example of how to insert a legend into a plot   
+
+##### First create label names
+
+leg.txt <- c('Statewide','ZONE 1','ZONE 2','ZONE 3','ZONE 4','ZONE 5','ZONE 6')   
+
+plot(SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Value,
+     SedimentEstCDF[SedimentEstCDF$CDF=='All Basins Carbon..Total..Sediments',]$Estimate.P,
+     main="2016-2018 Large Lakes\nSediment Total Carbon CDF", xlab="C mg/Kg", ylab="Percentile   n = 246")
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 1 Carbon..Total..Sediments',]$Estimate.P, col = 2)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 2 Carbon..Total..Sediments',]$Estimate.P, col = 3)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 3 Carbon..Total..Sediments',]$Estimate.P, col = 4)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 4 Carbon..Total..Sediments',]$Estimate.P, col = 5)   
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 5 Carbon..Total..Sediments',]$Estimate.P, col = 6)
+lines(SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Carbon..Total..Sediments',]$Value,
+      SedimentEstCDF[SedimentEstCDF$CDF=='ZONE 6 Carbon..Total..Sediments',]$Estimate.P, col = 9)   
+legend(35,50, leg.txt, pch = 16, col = c(1,2,3,4,5,6,9))
+
+#############################################################################
+### Probabilistic Analyses for probable effects categories of sediment metals
+#############################################################################
+
+####### Determine number of sediment samples
+
+nr <- nrow(combSed)
+
+####### Set up probabilistic parameters
+
+sites <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                     Combined=rep("All Basins",nr),
+                     basin=combSed$REPORTING_UNIT)
+dsgn <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=combSed$wgt,
+                   xcoord=combSed$xmarinus ,
+                   ycoord=combSed$ymarinus ,
+                   stratum=rep('combSed',nr))
+
+##############################################################################
+##### Script for Arsenic
+
+data.cat_Arsenic <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                            Arsenic_category=combSed$Arseniccat)
+
+combSed$Arsenic..Sediments <- as.numeric(combSed$`Arsenic  Sediments`)
+
+##Arseniccat <- cut(combSed$Arsenic..Sediments, breaks=c(0,9.8,33,10000000), include.lowest=TRUE)
+
+Arseniccat <- cut(combSed$Arsenic..Sediments, breaks=c(0,33,10000000), include.lowest=TRUE)
+combSed$Arseniccat <- Arseniccat
+combSed$Arseniccat <- as.factor(combSed$Arseniccat)
+
+
+Category_Arsenic <- cat.analysis(sites, subpop, dsgn, data.cat_Arsenic)
+
+# write out the results
+write.csv(Category_Arsenic,file='Category_Arsenic_Sediments.csv')
+
+######  End of Arsenic
+
+##########################################################################
+###### Begin Cadmium
+
+combSed$Cadmium..Sediments <- as.numeric(combSed$`Cadmium  Sediments`)
+
+##Cadmiumcat <- cut(combSed$Cadmium..Sediments, breaks=c(0,1,5,10000000), include.lowest=TRUE)
+
+Cadmiumcat <- cut(combSed$Cadmium..Sediments, breaks=c(0,5,10000000), include.lowest=TRUE)
+combSed$Cadmiumcat <- Cadmiumcat
+combSed$Cadmiumcat <- as.factor(combSed$Cadmiumcat)
+
+data.cat_Cadmium <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                               Cadmium_category=combSed$Cadmiumcat
+)
+
+Category_Cadmium <- cat.analysis(sites, subpop, dsgn, data.cat_Cadmium)
+
+# write out the results
+write.csv(Category_Cadmium,file='Category_Cadmium_Sediments.csv')
+
+######  End of Cadmium
+
+
+##########################################################################
+###### Begin Chromium
+
+combSed$Chromium..Sediments <- as.numeric(combSed$`Chromium  Sediments`)
+
+##Chromiumcat <- cut(combSed$Chromium..Sediments, breaks=c(0,43.4,111,10000000), include.lowest=TRUE)
+
+Chromiumcat <- cut(combSed$Chromium..Sediments, breaks=c(0,111,10000000), include.lowest=TRUE)
+combSed$Chromiumcat <- Chromiumcat
+combSed$Chromiumcat <- as.factor(combSed$Chromiumcat)
+
+data.cat_Chromium <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                                Chromium_category=combSed$Chromiumcat
+)
+
+Category_Chromium <- cat.analysis(sites, subpop, dsgn, data.cat_Chromium)
+
+# write out the results
+write.csv(Category_Chromium,file='Category_Chromium_Sediments.csv')
+
+######  End of Chromium
+
+
+##########################################################################
+###### Begin Copper
+
+combSed$Copper..Sediments <- as.numeric(combSed$`Copper  Sediments`)
+
+##Coppercat <- cut(combSed$Copper..Sediments, breaks=c(0,32,149,10000000), include.lowest=TRUE)
+
+Coppercat <- cut(combSed$Copper..Sediments, breaks=c(0,149,10000000), include.lowest=TRUE)
+combSed$Coppercat <- Coppercat
+combSed$Coppercat <- as.factor(combSed$Coppercat)
+
+data.cat_Copper <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                              Copper_category=combSed$Coppercat
+)
+
+Category_Copper <- cat.analysis(sites, subpop, dsgn, data.cat_Copper)
+
+# write out the results
+write.csv(Category_Copper,file='Category_Copper_Sediments.csv')
+
+######  End of Copper
+
+
+##########################################################################
+###### Begin Silver
+
+combSed$Silver..Sediments <- as.numeric(combSed$`Silver  Sediments`)
+
+##Silvercat <- cut(combSed$Silver..Sediments, breaks=c(0,1,2.2,10000000), include.lowest=TRUE)
+
+Silvercat <- cut(combSed$Silver..Sediments, breaks=c(0,2.2,10000000), include.lowest=TRUE)
+combSed$Silvercat <- Silvercat
+combSed$Silvercat <- as.factor(combSed$Silvercat)
+
+data.cat_Silver <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                              Silver_category=combSed$Silvercat
+)
+
+Category_Silver <- cat.analysis(sites, subpop, dsgn, data.cat_Silver)
+
+# write out the results
+write.csv(Category_Silver,file='Category_Silver_Sediments.csv')
+
+######  End of Silver
+
+
+##########################################################################
+###### Begin Nickel
+
+combSed$Nickel..Sediments <- as.numeric(combSed$`Nickel  Sediments`)
+
+##Nickelcat <- cut(combSed$Nickel..Sediments, breaks=c(0,23,48,10000000), include.lowest=TRUE)
+
+Nickelcat <- cut(combSed$Nickel..Sediments, breaks=c(0,48,10000000), include.lowest=TRUE)
+combSed$Nickelcat <- Nickelcat
+combSed$Nickelcat <- as.factor(combSed$Nickelcat)
+
+data.cat_Nickel <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                              Nickel_category=combSed$Nickelcat
+)
+
+Category_Nickel <- cat.analysis(sites, subpop, dsgn, data.cat_Nickel)
+
+# write out the results
+write.csv(Category_Nickel,file='Category_Nickel_Sediments.csv')
+
+######  End of Nickel
+
+
+##########################################################################
+###### Begin Lead
+
+combSed$Lead..Sediments <- as.numeric(combSed$`Lead  Sediments`)
+
+##Leadcat <- cut(combSed$Lead..Sediments, breaks=c(0,36,128,10000000), include.lowest=TRUE)
+
+Leadcat <- cut(combSed$Lead..Sediments, breaks=c(0,128,10000000), include.lowest=TRUE)
+combSed$Leadcat <- Leadcat
+combSed$Leadcat <- as.factor(combSed$Leadcat)
+
+data.cat_Lead <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                            Lead_category=combSed$Leadcat
+)
+
+Category_Lead <- cat.analysis(sites, subpop, dsgn, data.cat_Lead)
+
+# write out the results
+write.csv(Category_Lead,file='Category_Lead_Sediments.csv')
+
+
+######  End of Lead
+
+
+
+##########################################################################
+###### Begin Mercury
+
+combSed$Mercury..Sediments <- as.numeric(combSed$`Mercury  Sediments`)
+
+##Mercurycat <- cut(combSed$Mercury..Sediments, breaks=c(0,0.18,1.06,10000000), include.lowest=TRUE)
+
+Mercurycat <- cut(combSed$Mercury..Sediments, breaks=c(0,1.06,10000000), include.lowest=TRUE)
+combSed$Mercurycat <- Mercurycat
+combSed$Mercurycat <- as.factor(combSed$Mercurycat)
+
+data.cat_Mercury <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                            Mercury_category=combSed$Mercurycat
+)
+
+Category_Mercury <- cat.analysis(sites, subpop, dsgn, data.cat_Mercury)
+
+# write out the results
+write.csv(Category_Mercury,file='Category_Mercury_Sediments.csv')
+
+
+######  End of Mercury
+
+
+##########################################################################
+###### Begin Zinc
+
+combSed$Zinc..Sediments <- as.numeric(combSed$`Zinc  Sediments`)
+
+##Zinccat <- cut(combSed$Zinc..Sediments, breaks=c(0,121,459,10000000), include.lowest=TRUE)
+
+Zinccat <- cut(combSed$Zinc..Sediments, breaks=c(0,459,10000000), include.lowest=TRUE)
+combSed$Zinccat <- Zinccat
+combSed$Zinccat <- as.factor(combSed$Zinccat)
+
+data.cat_Zinc <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                            Zinc_category=combSed$Zinccat
+)
+
+Category_Zinc <- cat.analysis(sites, subpop, dsgn, data.cat_Zinc)
+
+# write out the results
+write.csv(Category_Zinc,file='Category_Zinc_Sediments.csv')
+
+
+######  End of Zinc
+
+##########################################################################
+###### Begin total. This produces the estimate for lake area failing any one 
+######    for the nine indicators.
+
+combSed$totalPECcat2 <- as.numeric(combSed$totalPECcat2)
+
+totalcat <- cut(combSed$totalPECcat2, breaks=c(0,0.99,1), include.lowest=TRUE)
+combSed$totalcat <- totalcat
+combSed$totalcat <- as.factor(combSed$totalcat)
+
+data.cat_total <- data.frame(siteID=combSed$PK_RANDOM_SAMPLE_LOCATION, 
+                             Total_category=combSed$totalcat
+)
+
+Category_total <- cat.analysis(sites, subpop, dsgn, data.cat_total)
+
+# write out the results
+write.csv(Category_total,file='Category_total_Sediments.csv')
+
+
+######  End of total
+
+#############################################################################
+#############################################################################
+######  Sediments Code ends here
+#############################################################################
+
+
+
+
+###___________________________________________________________________________________
+### Script to do pie charts on overall total water quality
+comb3$Totcat<-comb3$Tot
+Totcat <- cut(comb3$Totcat, breaks=c(0,0.99,1.99,2.99,5), include.lowest=TRUE)
+comb3$Totcat <- Totcat
+comb3$Totcat <- as.factor(comb3$Totcat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin)
+data.catTot <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                          Totcategory=comb3$Totcat
+)
+
+CategoryEstTot <-  cat.analysis(sites, subpop, dsgn, data.catTot,
+                                popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                             Basin=list("ZONE 1"=framesize,
+                                                        "ZONE 2"=framesize,
+                                                        "ZONE 3"=framesize, 
+                                                        "ZONE 4"=framesize,
+                                                        "ZONE 5"=framesize,
+                                                        "ZONE 6"=framesize 		
+                                             ))
+)
+# write out the results
+write.csv(CategoryEstTot,file='CategoryExampleToticat_LLmin.csv')
+
+###
+###_______________________________________________________________________________________
+
+
+###___________________________________________________________________________________
+### Script to do categories for pie charts of Total Nitrogen
+comb3$TNicat<-comb3$TNcat
+TNicat <- cut(comb3$TNicat, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb3$TNicat <- TNicat
+comb3$TNicat <- as.factor(comb3$TNicat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+data.catTN <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                         TNcategory=comb3$TNicat
+)
+
+CategoryEstTN <-  cat.analysis(sites, subpop, dsgn, data.catTN,
+                               popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                            Basin=list("ZONE 1"=framesize,
+                                                       "ZONE 2"=framesize,
+                                                       "ZONE 3"=framesize, 
+                                                       "ZONE 4"=framesize,
+                                                       "ZONE 5"=framesize,
+                                                       "ZONE 6"=framesize		
+                                            ))
+)
+# write out the results
+write.csv(CategoryEstTN,file='CategoryExampleTNmin_LL.csv')
+
+###
+###_______________________________________________________________________________________
+###
+### Script to do categories for pie charts
+comb3$TPicat<-comb3$TPcat
+TPicat <- cut(comb3$TPicat, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb3$TPicat <- TPicat
+comb3$TPicat <- as.factor(comb3$TPicat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+
+data.catTP <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                         TPcategory=comb3$TPicat
+)
+
+CategoryEstTP <-  cat.analysis(sites, subpop, dsgn, data.catTP,
+                               popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                            Basin=list("ZONE 1"=framesize,
+                                                       "ZONE 2"=framesize,
+                                                       "ZONE 3"=framesize, 
+                                                       "ZONE 4"=framesize,
+                                                       "ZONE 5"=framesize,
+                                                       "ZONE 6"=framesize 		
+                                            ))
+)
+# write out the results
+write.csv(CategoryEstTP,file='CategoryExampleTPmin_LL.csv')
+
+###_______________________________________________________________________________________
+###
+### Script to do categories for pie charts
+comb3$DOicat<-comb3$DOcat
+DOicat <- cut(comb3$DOicat, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb3$DOicat <- DOicat
+comb3$DOicat <- as.factor(comb3$DOicat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+
+data.catDO <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                         TPcategory=comb3$DOicat
+)
+
+CategoryEstDO <-  cat.analysis(sites, subpop, dsgn, data.catDO,
+                               popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                            Basin=list("ZONE 1"=framesize,
+                                                       "ZONE 2"=framesize,
+                                                       "ZONE 3"=framesize, 
+                                                       "ZONE 4"=framesize,
+                                                       "ZONE 5"=framesize,
+                                                       "ZONE 6"=framesize 		
+                                            ))
+)
+# write out the results
+write.csv(CategoryEstDO,file='CategoryExampleDOicat_LL.csv')
+
+###_________________________________________________________________________________________
+
+## Using the maximum values
+##Pass = 1, Fail = 0
+##TN
+##Pass if TN threshold value is >= TN result value.
+##Fail if TN threshold value is < TN result value.
+comb3$TN2cat<-ifelse((comb3$TN.Max >= comb3$TN),1,0) 
+##TP
+##Pass if TP threshold value is >= TP result value.
+##Fail if TP threshold value is < TP result value.
+comb3$TP2cat<-ifelse((comb3$TP.Max >= comb3$Phosphorus..Total..as.P),1,0)  
+##DO
+##Fail if DO threshold value is > DO result value.
+##Pass if DO threshold value is =< DO result value.
+comb3$DOcat<-ifelse((comb3$DO.Conc > comb3$Oxygen..Dissolved.Percent.Saturation),0,1)
+
+
+comb3$Tot2<-(comb3$TN2cat+comb3$TP2cat+comb3$DOcat)
+
+
+######################################################################################
+###################2006 305b Pie Charts (LAKES)#######################################
+######################################################################################
+
+
+
+###___________________________________________________________________________________
+### Script to do pie charts on overall total water quality
+comb3$Tot2cat<-comb3$Tot2
+Tot2cat <- cut(comb3$Tot2cat, breaks=c(0,0.99,1.99,2.99,5), include.lowest=TRUE)
+comb3$Tot2cat <- Tot2cat
+comb3$Tot2cat <- as.factor(comb3$Tot2cat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+data.catTot2 <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                           Totcategory=comb3$Tot2cat
+)
+
+CategoryEstTot2 <-  cat.analysis(sites, subpop, dsgn, data.catTot2,
+                                 popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                              Basin=list("ZONE 1"=framesize,
+                                                         "ZONE 2"=framesize,
+                                                         "ZONE 3"=framesize, 
+                                                         "ZONE 4"=framesize,
+                                                         "ZONE 5"=framesize,
+                                                         "ZONE 6"=framesize 		
+                                              ))
+)
+# write out the results
+write.csv(CategoryEstTot2,file='CategoryExampleTot2icat.csv')
+
+###
+###_______________________________________________________________________________________
+
+
+###___________________________________________________________________________________
+### Script to do categories for pie charts of Total Nitrogen
+comb3$TN2icat<-comb3$TN2cat
+TN2icat <- cut(comb3$TN2icat, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb3$TN2icat <- TN2icat
+comb3$TN2icat <- as.factor(comb3$TN2icat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+data.catTN2 <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                          TNcategory=comb3$TN2icat
+)
+
+CategoryEstTN2 <-  cat.analysis(sites, subpop, dsgn, data.catTN2,
+                                popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                             Basin=list("ZONE 1"=framesize,
+                                                        "ZONE 2"=framesize,
+                                                        "ZONE 3"=framesize, 
+                                                        "ZONE 4"=framesize,
+                                                        "ZONE 5"=framesize,
+                                                        "ZONE 6"=framesize 		
+                                             ))
+)
+# write out the results
+write.csv(CategoryEstTN2,file='CategoryExampleTNmax_LL.csv')
+
+###
+###_______________________________________________________________________________________
+###
+### Script to do categories for pie charts
+comb3$TP2icat<-comb3$TP2cat
+TP2icat <- cut(comb3$TP2icat, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb3$TP2icat <- TP2icat
+comb3$TP2icat <- as.factor(comb3$TP2icat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+
+data.catTP2 <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                          TPcategory=comb3$TP2icat
+)
+
+CategoryEstTP2 <-  cat.analysis(sites, subpop, dsgn, data.catTP2,
+                                popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                             Basin=list("ZONE 1"=framesize,
+                                                        "ZONE 2"=framesize,
+                                                        "ZONE 3"=framesize, 
+                                                        "ZONE 4"=framesize,
+                                                        "ZONE 5"=framesize,
+                                                        "ZONE 6"=framesize 		
+                                             ))
+)
+# write out the results
+write.csv(CategoryEstTP2,file='CategoryExampleTPmax_LL.csv')
+
+###_______________________________________________________________________________________
+###
+### Script to do categories for pie charts
+comb3$DO2icat<-comb3$DOcat
+DO2icat <- cut(comb3$DO2icat, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb3$DO2icat <- DO2icat
+comb3$DO2icat <- as.factor(comb3$DO2icat)
+
+
+nr <- nrow(comb3)
+sites <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb3$basin) 
+dsgn <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb3$wgt,
+                   xcoord=comb3$xmarinus ,
+                   ycoord=comb3$ymarinus ,
+                   stratum=comb3$basin
+)
+
+data.catDO2 <- data.frame(siteID=comb3$PK_RANDOM_SAMPLE_LOCATION, 
+                          TPcategory=comb3$DO2icat
+)
+
+CategoryEstDO2 <-  cat.analysis(sites, subpop, dsgn, data.catDO2,
+                                popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                             Basin=list("ZONE 1"=framesize,
+                                                        "ZONE 2"=framesize,
+                                                        "ZONE 3"=framesize, 
+                                                        "ZONE 4"=framesize,
+                                                        "ZONE 5"=framesize,
+                                                        "ZONE 6"=framesize 		
+                                             ))
+)
+# write out the results
+write.csv(CategoryEstDO2,file='CategoryExampleDO2icat_LL.csv')
+###
+###_______________________________________________________________________________________
+###
+comb4<-comb3
+names(comb4)
+
+comb4$Chl.conc<- ifelse(comb4$col.alk.cat=="0 0",20,
+                      ifelse(comb4$col.alk.cat=="0 1", 20,
+                             ifelse(comb4$col.alk.cat== "1 0", 20,
+                                    ifelse(comb4$col.alk.cat=="1 1", 6,NA))))
+
+comb4$Chlpf<-ifelse((comb4$Chl.conc > comb4$Chlorophyll.A..Monochromatic),1,0) 
+
+
+X32211cat <- cut(comb4$Chlpf, breaks=c(0,0.99,1), include.lowest=TRUE)
+comb4$X32211cat <- X32211cat
+comb4$X32211cat <- as.factor(comb4$X32211cat)
+
+nr <- nrow(comb4)
+sites <- data.frame(siteID=comb4$PK_RANDOM_SAMPLE_LOCATION, Use=rep(TRUE,nr) )
+subpop <- data.frame(siteID=comb4$PK_RANDOM_SAMPLE_LOCATION, 
+                     CombinedBasins=rep("All Basins",nr),
+                     Basin=comb4$basin) 
+dsgn <- data.frame(siteID=comb4$PK_RANDOM_SAMPLE_LOCATION, 
+                   wgt=comb4$wgt,
+                   xcoord=comb4$xmarinus ,
+                   ycoord=comb4$ymarinus ,
+                   stratum=comb4$basin
+)
+data.cat32211 <- data.frame(siteID=comb4$PK_RANDOM_SAMPLE_LOCATION, 
+                            X32211category=comb4$X32211cat
+)
+
+CategoryEst32211 <- cat.analysis(sites, subpop, dsgn, data.cat32211,
+                                 popsize=list(CombinedBasins=list("All Basins"=framesize),
+                                              Basin=list("ZONE 1"=framesize ,"ZONE 2"=framesize ,
+                                                         "ZONE 3"=framesize ,"ZONE 4"=framesize ,
+                                                         "ZONE 5"=framesize ,"ZONE 6"=framesize	)
+                                 ) )
+
+# write out the results
+write.csv(CategoryEst32211,file='LL2016-18Chlorophylla_pass_fail.csv')
+
+###___________________________________________________________________________________
+
+
+
+
+######################################################################################
+
+
+
