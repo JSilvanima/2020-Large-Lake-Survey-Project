@@ -100,8 +100,14 @@ addmargins(table(dsgn_sf$EXCLUSION_CATEGORY, dsgn_sf$TNT, useNA = 'ifany'))
 #  \Florida Large Lake Design 2020 Documentation.doc.
 # From design document framesize in hectates = 384,373.86 for entire data frame.
 
-framesize <- c("ZONE 1"=18319.077 ,"ZONE 2"=7646.538 ,"ZONE 3"=121141.645,
-               "ZONE 4"=43936.962 ,"ZONE 5"=63328.456 ,"ZONE 6"=130001.179)
+# 2020 framesize
+#framesize <- c("ZONE 1"=18319.077 ,"ZONE 2"=7646.538 ,"ZONE 3"=121141.645,
+#               "ZONE 4"=43936.962 ,"ZONE 5"=63328.456 ,"ZONE 6"=130001.179)
+
+# 2019 framesize
+framesize <- c("ZONE 1"=19966.323,"ZONE 2"=7654.355,
+               "ZONE 3"=121093.811,"ZONE 4"=44508.296,"ZONE 5"=63355.565,
+               "ZONE 6"=130028.876)
 
 # use all evaluated sites to adjust weights
 nr <- nrow(dsgn_sf)
