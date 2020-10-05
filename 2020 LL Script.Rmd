@@ -6,7 +6,8 @@ output:
   html_document: default
   pdf_document: default
 ---
-This RMarkdown script is based on the R script "2020 LL script.R" 
+This RMarkdown script is based on the R script "2020 LL script.R" The data
+used in this example are from 2019.
 
 Note that this code can be executed in current environment by using the code within the ```{r} to ``` portions.  It can also be executed by using "knit" in RStudio which will produce an html file of the output.
 ```{r setup, include=FALSE}

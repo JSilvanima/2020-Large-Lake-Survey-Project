@@ -28,7 +28,7 @@ library(ggplot2)
 # Insert the name of the exclusion table created in FDEP's Oracle database
 #  'GWIS' by Liz Miller. Be sure to enclose table name in single quotes. 
 
-# Example 'LL_EXCLUSIONS_2020'.
+# Example 'LL_EXCLUSIONS_2020'. Note are using 2019 below for a test.
 
 FDEPgetdata::getdata_fw_exclusions('LL_EXCLUSIONS_2019')
 
