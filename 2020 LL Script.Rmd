@@ -38,10 +38,11 @@ For this markdown file we'll read in the export of the data pull above because t
  
 ```{r} 
 
-#FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
+# FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
 
 # Package FDEPgetdata creates a dataframe names 'Exclusions' from the 
-#  information provided.
+#  information provided. Total nitrogen (F.A.C. 62-302.531), total 
+#  phosphorus (F.A.C. 62-302.531), and dissolved oxygen (F.A.C.62-302.533) #  criteria are added for each record based on the #corresponding nutrient #  watershed region and bioregion.
 
 LL.SITES <- read.csv("C:/R/Status 2020/2020 LL/LL_EXCLUSIONS_2019.CSV",
                      stringsAsFactors = FALSE)

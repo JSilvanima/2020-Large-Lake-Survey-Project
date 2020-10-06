@@ -33,7 +33,9 @@ library(ggplot2)
 FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
 
 # Function getdata_lake_exclusions creates a dataframe names 'Exclusions' from the 
-#  information provided.
+#  information provided. Total nitrogen (F.A.C. 62-302.531), total phosphorus (F.A.C. 62-302.531), 
+#  and dissolved oxygen (F.A.C. 62-302.533) criteria are added for each record
+#  based on the corresponding nutrient watershed region and bioregion.
 
 # Create new data frame from the one just created.
 
@@ -282,7 +284,9 @@ names(LL_WQ)
 LL_WQ$TN<-(LL_WQ$Kjeldahl_Nitrogen_Total_as_N+LL_WQ$NitrateNitrite_Total_as_N)
 
 ### Pass=1 AND Fail=0
-### Using the maximum values listed in 62-302 351
+### Using the maximum values listed for Total nitrogen (F.A.C. 62-302.531)
+###  and total phosphorus (F.A.C. 62-302.531), and the values for 
+###  dissolved oxygen (F.A.C. 62-302.533)
 
 LL_WQ$TN_cat<-ifelse((LL_WQ$TN_Max >= LL_WQ$TN),1,0) 
 
