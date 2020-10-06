@@ -32,13 +32,13 @@ Code developed using R version 3.6.2 (2019-12-12). Note that the script uses  ve
 
 ## Load Exclusions File
 Insert the name of the exclusion table created in FDEP's Oracle database
- 'GWIS'. As this is a literal, be sure to enclose in single quotes. Example 'CN_EXCLUSIONS_2020'. # Function getdata_results creates the table 'Exclusions'.
+ 'GWIS'. As this is a literal, be sure to enclose in single quotes. Example 'LL_EXCLUSIONS_2020'. Function getdata_lake_exclusions creates a dataframe names 'Exclusions' from the information provided.
  
 For this markdown file we'll read in the export of the data pull above because the package FDEPgetdata is an internal FDEP package.
  
 ```{r} 
 
-#FDEPgetdata::getdata_fw_exclusions('CN_EXCLUSIONS_2019')
+#FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
 
 # Package FDEPgetdata creates a dataframe names 'Exclusions' from the 
 #  information provided.

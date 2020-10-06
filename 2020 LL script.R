@@ -30,9 +30,9 @@ library(ggplot2)
 
 # Example 'LL_EXCLUSIONS_2020'. Note are using 2019 below for a test.
 
-FDEPgetdata::getdata_fw_exclusions('LL_EXCLUSIONS_2019')
+FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
 
-# Function getdata_fw_exclusions creates a dataframe names 'Exclusions' from the 
+# Function getdata_lake_exclusions creates a dataframe names 'Exclusions' from the 
 #  information provided.
 
 # Create new data frame from the one just created.
@@ -213,8 +213,8 @@ keep <- LL_RSLTS$SAMPLE_TYPE == 'PRIMARY' & LL_RSLTS$MATRIX == 'WATER'
 # merge with exclusion file
 LL_WQ <- merge(as.data.frame(dsgn_sf)[, c("PK_RANDOM_SAMPLE_LOCATION",
                                           "REPORTING_UNIT", "EXCLUSION_CATEGORY","TNT", "wgt", 
-                                          "londd", "latdd", "xcoord", "ycoord", "NUTRIENT_WATERSHED_REGION",
-                                          "DO_Conc")], LL_RSLTS[keep,], 
+                                          "londd", "latdd", "xcoord", "ycoord", 
+                                          "NUTRIENT_WATERSHED_REGION", "DO_Conc")], LL_RSLTS[keep,], 
                by.x = 'PK_RANDOM_SAMPLE_LOCATION', 
                by.y = 'FK_RANDOM_SAMPLE_LOCATION')
 
@@ -267,37 +267,26 @@ LL_WQ$Alkalinity_cat<- ifelse((LL_WQ$Alkalinity_Total_as_CaCO3 > 20) ,0,1)
 LL_WQ$Col_Alk_cat<-paste(LL_WQ$Color_cat, LL_WQ$Alkalinity_cat)
 
 ## Use new Col_Alk_cat character variable to assign thresholds for TN and TP
-LL_WQ$TN_Min<- ifelse(LL_WQ$Col_Alk_cat=="0 0",1.27,
-                      ifelse(LL_WQ$Col_Alk_cat=="0 1", 1.27,
-                             ifelse(LL_WQ$Col_Alk_cat== "1 0", 1.05,
-                                    ifelse(LL_WQ$Col_Alk_cat=="1 1", 0.51,NA))))
 LL_WQ$TN_Max<- ifelse(LL_WQ$Col_Alk_cat=="0 0",2.23,
                       ifelse(LL_WQ$Col_Alk_cat=="0 1", 2.23,
                              ifelse(LL_WQ$Col_Alk_cat== "1 0", 1.91,
                                     ifelse(LL_WQ$Col_Alk_cat=="1 1", 0.93,NA))))
-LL_WQ$TP_Min<- ifelse((LL_WQ$Color_cat==0 & LL_WQ$NUTRIENT_WATERSHED_REGION=="WEST CENTRAL"),0.49,
-                      ifelse(LL_WQ$Col_Alk_cat=="0 0",0.05,
-                             ifelse(LL_WQ$Col_Alk_cat=="0 1",0.05,
-                                    ifelse(LL_WQ$Col_Alk_cat=="1 0", 0.03,
-                                           ifelse(LL_WQ$Col_Alk_cat=="1 1",0.01,NA)))))
 LL_WQ$TP_Max<- ifelse((LL_WQ$Color_cat==0 & LL_WQ$NUTRIENT_WATERSHED_REGION=="WEST CENTRAL"),0.49,
                       ifelse(LL_WQ$Col_Alk_cat=="0 0",0.16,
                              ifelse(LL_WQ$Col_Alk_cat=="0 1",0.16,
                                     ifelse(LL_WQ$Col_Alk_cat=="1 0", 0.09,
                                            ifelse(LL_WQ$Col_Alk_cat=="1 1",0.03,NA)))))
 
-
-
 names(LL_WQ)
 
 LL_WQ$TN<-(LL_WQ$Kjeldahl_Nitrogen_Total_as_N+LL_WQ$NitrateNitrite_Total_as_N)
 
 ### Pass=1 AND Fail=0
-### Using the minimum values
+### Using the maximum values listed in 62-302 351
 
-LL_WQ$TN_cat<-ifelse((LL_WQ$TN_Min >= LL_WQ$TN),1,0) 
+LL_WQ$TN_cat<-ifelse((LL_WQ$TN_Max >= LL_WQ$TN),1,0) 
 
-LL_WQ$TP_cat<-ifelse((LL_WQ$TP_Min >= LL_WQ$Phosphorus_Total_as_P),1,0)  	
+LL_WQ$TP_cat<-ifelse((LL_WQ$TP_Max >= LL_WQ$Phosphorus_Total_as_P),1,0)  	
 
 LL_WQ$DO_cat<-ifelse((LL_WQ$DO_Conc >= LL_WQ$Oxygen_Dissolved_Percent_Saturation),0,1) 
 
