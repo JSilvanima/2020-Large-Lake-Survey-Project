@@ -33,9 +33,8 @@ library(ggplot2)
 FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
 
 # Function getdata_lake_exclusions creates a dataframe names 'Exclusions' from the 
-#  information provided. Total nitrogen (F.A.C. 62-302.531), total phosphorus (F.A.C. 62-302.531), 
-#  and dissolved oxygen (F.A.C. 62-302.533) criteria are added for each record
-#  based on the corresponding nutrient watershed region and bioregion.
+#  information provided. Corresponding Nutrient watershed region and bioregion are 
+#  incorporated for each site.
 
 # Create new data frame from the one just created.
 
@@ -57,13 +56,14 @@ LL.SITES$londd <- deg + min/60 + sec/3600
 LL.SITES$londd <- -LL.SITES$londd
 
 # Create sf object and transform to Albers projection for analysis
-#  This codes utilizes Coordinate Reference System (CRS) Codes.
-#  The first crs code below is for NAD 83 Harn datum the second crs code
-#  is for Florida albers projection. More information on these codes is found here:
+#  This codes utilizes Coordinate Reference System (CRS/EPSG) Codes.
+#  The first crs code (4269) below is for NAD 83 coordinate system the 
+#  second crs code (3087) is for Florida albers projection. 
+#  More information on these codes is found here: 
 #  https://www.nceas.ucsb.edu/sites/default/files/2020-04/OverviewCoordinateReferenceSystems.pdf.
 
 dsgn_LL <- st_as_sf(LL.SITES, coords = c("londd", "latdd"), remove = FALSE,
-                    crs = 4152)
+                    crs = 4269)
 dsgn_sf <- st_transform(dsgn_LL, crs = 3087)
 
 # keep xy coords as variables
@@ -259,8 +259,8 @@ LL_WQ$TAmm_Cat<-ifelse((LL_WQ$TotAmmCrit_SingleSamp >= LL_WQ$Ammonia_Total_as_N)
 
 ###################################################################
 ### Numeric Nutrient and DO Categories
-### Using the min and max NNC criteria values determine Pass=1 AND Fail=0 
-### for the min and max NNC criteria values and for DO dissolved % saturation.
+### Using the max NNC criteria values determine Pass=1 AND Fail=0 
+### for the max NNC criteria values and for DO dissolved % saturation.
 
 LL_WQ$Color_cat<- ifelse((LL_WQ$Color_true > 40) ,0,1)
 
@@ -269,6 +269,7 @@ LL_WQ$Alkalinity_cat<- ifelse((LL_WQ$Alkalinity_Total_as_CaCO3 > 20) ,0,1)
 LL_WQ$Col_Alk_cat<-paste(LL_WQ$Color_cat, LL_WQ$Alkalinity_cat)
 
 ## Use new Col_Alk_cat character variable to assign thresholds for TN and TP
+
 LL_WQ$TN_Max<- ifelse(LL_WQ$Col_Alk_cat=="0 0",2.23,
                       ifelse(LL_WQ$Col_Alk_cat=="0 1", 2.23,
                              ifelse(LL_WQ$Col_Alk_cat== "1 0", 1.91,
@@ -295,12 +296,8 @@ LL_WQ$TP_cat<-ifelse((LL_WQ$TP_Max >= LL_WQ$Phosphorus_Total_as_P),1,0)
 LL_WQ$DO_cat<-ifelse((LL_WQ$DO_Conc >= LL_WQ$Oxygen_Dissolved_Percent_Saturation),0,1) 
 
 
-### Note for combined NNc and DO, pass = 3, fail = 0
+### Note for combined NNc and DO, pass = 3, fail < 3
 LL_WQ$NNCDO_cat<-(LL_WQ$TN_cat+LL_WQ$TP_cat+LL_WQ$DO_cat)
-
-
-#LL_WQ$NNCDO_cat <- LL_WQ$NNCDO_tot
-#LL_WQ$NNCDO_cat[LL_WQ$NNCDO_cat <= 2]<-0
 
 
 ########### end NNC and DO category calculations

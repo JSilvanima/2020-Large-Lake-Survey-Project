@@ -40,9 +40,7 @@ For this markdown file we'll read in the export of the data pull above because t
 
 # FDEPgetdata::getdata_lake_exclusions('LL_EXCLUSIONS_2019')
 
-# Package FDEPgetdata creates a dataframe names 'Exclusions' from the 
-#  information provided. Total nitrogen (F.A.C. 62-302.531), total 
-#  phosphorus (F.A.C. 62-302.531), and dissolved oxygen (F.A.C.62-302.533) #  criteria are added for each record based on the #corresponding nutrient #  watershed region and bioregion.
+# Function getdata_lake_exclusions creates a dataframe names 'Exclusions' #  from the information provided. Corresponding Nutrient watershed region #  and bioregion are incorporated for each site.
 
 LL.SITES <- read.csv("C:/R/Status 2020/2020 LL/LL_EXCLUSIONS_2019.CSV",
                      stringsAsFactors = FALSE)
@@ -67,19 +65,21 @@ LL.SITES$londd <- deg + min/60 + sec/3600
 # Change londd to negative for correct use in sf.
 LL.SITES$londd <- -LL.SITES$londd
 ```
-Per Tony Olsen, "spsurvey in the future will use sf objects and will not have functions to convert to projected coordinates except by use of sf library functions. Consequently, create an sf design object, transform to an Albers projection and keep both lat/lon and xycoords as variables in the data.frame. Note that crs equal to EPSG code 4152 is NAD83 HARN datum for lat/lon and EPSG code 5070 is an Albers projection. Can do web search for these to see their definition.
+Per Tony Olsen, "spsurvey in the future will use sf objects and will not have functions to convert to projected coordinates except by use of sf library functions. Consequently, create an sf design object, transform to an Albers projection and keep both lat/lon and xycoords as variables in the data.frame. Note that crs equal to EPSG code 4269 is NAD83 HARN coordinate system for lat/lon and EPSG code 3087 is an Albers projection. Can do web search for these to see their definition.
 
 Note the plot command is a "method" for sf package to plot information. In this case, all we plot is the site locations, i.e., their geometry."
 
 ```{r}
 # Create sf object and transform to Albers projection for analysis
-#  This codes utilizes Coordinate Reference System (CRS) Codes.
-#  The first crs code below is for NAD 83 Harn datum the second crs code
-#  is for Florida albers projection. More information on these codes is found here:
+#  This codes utilizes Coordinate Reference System (CRS/EPSG) Codes.
+#  The first crs code (4269) below is for NAD 83 coordinate system the 
+#  second crs code (3087) is for Florida albers projection. 
+#  More information on these codes is found here: 
 #  https://www.nceas.ucsb.edu/sites/default/files/2020-04/OverviewCoordinateReferenceSystems.pdf.
 
+
 dsgn_LL <- st_as_sf(LL.SITES, coords = c("londd", "latdd"), remove = FALSE,
-                    crs = 4152)
+                    crs = 4269)
 dsgn_sf <- st_transform(dsgn_LL, crs = 3087)
 
 # keep xy coords as variables
@@ -252,7 +252,7 @@ LL_WQ$TAmm_Cat<-ifelse((LL_WQ$TotAmmCrit_SingleSamp >= LL_WQ$Ammonia_Total_as_N)
 #########End Ammonia Calculation
 ```
 ## Florida Numeric Nutrient and DO Criteria Categories
-Using the min and max NNC criteria values determine Pass=1 AND Fail=0 for the min and max NNC criteria values and for DO dissolved % saturation.
+Use the maximum total nitrogen (F.A.C. 62-302.531), maximum total phosphorus (F.A.C. 62-302.531), and dissolved oxygen (F.A.C. 62-302.533) criteria to determine Pass=1 / Fail=0 category.
 
 ```{r}
 LL_WQ$Color_cat<- ifelse((LL_WQ$Color_true > 40) ,0,1)
@@ -262,45 +262,35 @@ LL_WQ$Alkalinity_cat<- ifelse((LL_WQ$Alkalinity_Total_as_CaCO3 > 20) ,0,1)
 LL_WQ$Col_Alk_cat<-paste(LL_WQ$Color_cat, LL_WQ$Alkalinity_cat)
 
 ## Use new Col_Alk_cat character variable to assign thresholds for TN and TP
-LL_WQ$TN_Min<- ifelse(LL_WQ$Col_Alk_cat=="0 0",1.27,
-                      ifelse(LL_WQ$Col_Alk_cat=="0 1", 1.27,
-                             ifelse(LL_WQ$Col_Alk_cat== "1 0", 1.05,
-                                    ifelse(LL_WQ$Col_Alk_cat=="1 1", 0.51,NA))))
+
 LL_WQ$TN_Max<- ifelse(LL_WQ$Col_Alk_cat=="0 0",2.23,
                       ifelse(LL_WQ$Col_Alk_cat=="0 1", 2.23,
                              ifelse(LL_WQ$Col_Alk_cat== "1 0", 1.91,
                                     ifelse(LL_WQ$Col_Alk_cat=="1 1", 0.93,NA))))
-LL_WQ$TP_Min<- ifelse((LL_WQ$Color_cat==0 & LL_WQ$NUTRIENT_WATERSHED_REGION=="WEST CENTRAL"),0.49,
-                      ifelse(LL_WQ$Col_Alk_cat=="0 0",0.05,
-                             ifelse(LL_WQ$Col_Alk_cat=="0 1",0.05,
-                                    ifelse(LL_WQ$Col_Alk_cat=="1 0", 0.03,
-                                           ifelse(LL_WQ$Col_Alk_cat=="1 1",0.01,NA)))))
 LL_WQ$TP_Max<- ifelse((LL_WQ$Color_cat==0 & LL_WQ$NUTRIENT_WATERSHED_REGION=="WEST CENTRAL"),0.49,
                       ifelse(LL_WQ$Col_Alk_cat=="0 0",0.16,
                              ifelse(LL_WQ$Col_Alk_cat=="0 1",0.16,
                                     ifelse(LL_WQ$Col_Alk_cat=="1 0", 0.09,
                                            ifelse(LL_WQ$Col_Alk_cat=="1 1",0.03,NA)))))
 
+names(LL_WQ)
 
 LL_WQ$TN<-(LL_WQ$Kjeldahl_Nitrogen_Total_as_N+LL_WQ$NitrateNitrite_Total_as_N)
 
 ### Pass=1 AND Fail=0
-### Using the minimum values
+### Using the maximum values listed for Total nitrogen (F.A.C. 62-302.531)
+###  and total phosphorus (F.A.C. 62-302.531), and the values for 
+###  dissolved oxygen (F.A.C. 62-302.533)
 
-LL_WQ$TN_cat<-ifelse((LL_WQ$TN_Min >= LL_WQ$TN),1,0) 
+LL_WQ$TN_cat<-ifelse((LL_WQ$TN_Max >= LL_WQ$TN),1,0) 
 
-LL_WQ$TP_cat<-ifelse((LL_WQ$TP_Min >= LL_WQ$Phosphorus_Total_as_P),1,0)  	
+LL_WQ$TP_cat<-ifelse((LL_WQ$TP_Max >= LL_WQ$Phosphorus_Total_as_P),1,0)  	
 
-LL_WQ$DO_cat<-ifelse((LL_WQ$DO_Conc >= 
-        LL_WQ$Oxygen_Dissolved_Percent_Saturation),0,1) 
+LL_WQ$DO_cat<-ifelse((LL_WQ$DO_Conc >= LL_WQ$Oxygen_Dissolved_Percent_Saturation),0,1) 
 
 
-### Note for combined NNc and DO, pass = 3, fail = 0
+### Note for combined NNc and DO, pass = 3, fail < 3
 LL_WQ$NNCDO_cat<-(LL_WQ$TN_cat+LL_WQ$TP_cat+LL_WQ$DO_cat)
-
-
-#LL_WQ$NNCDO_cat <- LL_WQ$NNCDO_tot
-#LL_WQ$NNCDO_cat[LL_WQ$NNCDO_cat <= 2]<-0
 
 
 ########### end NNC and DO category calculations
